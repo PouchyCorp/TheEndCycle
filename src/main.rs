@@ -187,101 +187,53 @@ fn ik_on_arm(
     children: Query<&Children>,
     target: Query<&Transform, (With<TargetBall>, Without<Hand>, Without<Joint>)>,
     mut joint_query: Query<(&GlobalTransform, &mut Transform), (With<Joint>, Without<Hand>)>,
-    mut bone_query: Query<(&Bone, &GlobalTransform, &mut Transform)>,
     hand_query: Query<&GlobalTransform, (Without<Joint>, With<Hand>)>
 ) {
-    const ITERATIONS: usize = 15;
-    const IK_EPSILON: f32 = 0.5;
+    const MAX_ROTATION_PER_ITER: f32 = 10.0 * PI / 180.0; // 10 degrees in radians
+    const IK_EPSILON: f32 = 0.5; // Minimum distance to consider as "close enough"
 
-    for root_entity in root_query {
-        // Gather all entities in the arm chain
+    for root_entity in root_query{
         let all_children: Vec<Entity> = children.iter_descendants(root_entity).collect();
 
-        // Collect joint and bone entities in order
-        let mut joint_entities = Vec::new();
-        let mut bone_entities = Vec::new();
+        let mut joints: Vec<Entity> = Vec::new();
         for &child in &all_children {
             if joint_query.get_mut(child).is_ok() {
-                joint_entities.push(child);
-            }
-            if bone_query.get_mut(child).is_ok() {
-                bone_entities.push(child);
+                joints.push(child);
             }
         }
-        let hand_entity = *all_children.last().expect("the arm does not have a hand");
+        let hand: Entity = *all_children.last().expect("the arm does not have a hand");
 
-        // Collect positions and lengths
-        let mut positions = Vec::new();
-        let mut lengths = Vec::new();
+        let target_transform: &Transform = target.single().expect("no target");
+        // do Cyclic Corrdinate IK
+        for _ in 0..ITERATIONS_COUNT{
+            // do IK
+            for joint in joints.iter(){
+                let (global_joint_transform, mut joint_transform) =  joint_query.get_mut(*joint).expect("");
+                
+                // Re-fetch hand transform after each joint rotation for up-to-date position
+                let hand_transform = hand_query.get(hand).expect("the arm does not have a hand");
+                let joint_pos = global_joint_transform.translation().truncate();
+                let hand_pos = hand_transform.translation().truncate();
+                let target_pos = target_transform.translation.truncate();
 
-        // Root position
-        let root_transform = joint_query.get(root_entity)
-            .map(|(gt, _)| gt)
-            .unwrap_or_else(|_| panic!("Root entity missing transform"));
-        positions.push(root_transform.translation().truncate());
+                let vector_joint_hand = hand_pos - joint_pos;
+                let vector_joint_target = target_pos - joint_pos;
 
-        // For each joint, get its position
-        for &joint in &joint_entities {
-            let (global, _) = joint_query.get_mut(joint).unwrap();
-            positions.push(global.translation().truncate());
-        }
-        // For each bone, get its length
-        for &bone in &bone_entities {
-            let (bone_comp, _, _) = bone_query.get_mut(bone).unwrap();
-            lengths.push(bone_comp.length);
-        }
+                // Only rotate if the hand is not close enough to the target
+                if vector_joint_hand.length() > 1e-6 && vector_joint_target.length() > 1e-6 && (hand_pos - target_pos).length() > IK_EPSILON {
+                    let vector_joint_hand_norm = vector_joint_hand.normalize();
+                    let vector_joint_target_norm = vector_joint_target.normalize();
+                    let angle = vector_joint_hand_norm.angle_to(vector_joint_target_norm);
+                    // Determine the sign of the angle using cross product
+                    let cross = vector_joint_hand_norm.perp_dot(vector_joint_target_norm);
+                    let signed_angle = if cross < 0.0 { -angle } else { angle };
 
-        // Add hand position
-        let hand_transform = hand_query.get(hand_entity).unwrap();
-        positions.push(hand_transform.translation().truncate());
+                    // Clamp the rotation to avoid flailing
+                    let clamped_angle = signed_angle.clamp(-MAX_ROTATION_PER_ITER, MAX_ROTATION_PER_ITER);
 
-        // If the arm is not initialized properly, skip
-        if positions.len() < 2 || lengths.len() != positions.len() - 1 {
-            continue;
-        }
-
-        // FABRIK algorithm
-        let target_pos = target.single().expect("no target").translation.truncate();
-        let root_pos = positions[0];
-        let total_length: f32 = lengths.iter().sum();
-        let dist_to_target = (target_pos - root_pos).length();
-
-        // If unreachable, stretch towards target
-        if dist_to_target > total_length {
-            for i in 0..positions.len() - 1 {
-                let dir = (target_pos - positions[i]).normalize();
-                positions[i + 1] = positions[i] + dir * lengths[i];
-            }
-        } else {
-            for _ in 0..ITERATIONS {
-                // Forward reaching
-                positions[positions.len() - 1] = target_pos;
-                for i in (0..positions.len() - 1).rev() {
-                    let dir = (positions[i] - positions[i + 1]).normalize();
-                    positions[i] = positions[i + 1] + dir * lengths[i];
-                }
-                // Backward reaching
-                positions[0] = root_pos;
-                for i in 0..positions.len() - 1 {
-                    let dir = (positions[i + 1] - positions[i]).normalize();
-                    positions[i + 1] = positions[i] + dir * lengths[i];
-                }
-                // Stop if close enough
-                if (positions[positions.len() - 1] - target_pos).length() < IK_EPSILON {
-                    break;
+                    joint_transform.rotation = joint_transform.rotation * Quat::from_rotation_z(clamped_angle);
                 }
             }
-        }
-
-        // Update joint rotations to match new positions
-        // Skip root (positions[0]), update each joint to point to next position
-        for (i, &joint) in joint_entities.iter().enumerate() {
-            let (_, mut local_transform) = joint_query.get_mut(joint).unwrap();
-            let from = positions[i];
-            let to = positions[i + 1];
-            let dir = (to - from).normalize();
-            let angle = dir.y.atan2(dir.x) - PI / 2.0;
-            local_transform.rotation = Quat::from_rotation_z(angle);
         }
     }
 }
