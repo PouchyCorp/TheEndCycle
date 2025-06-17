@@ -4,7 +4,7 @@ use bevy::{
 };
 use bevy_dev_tools::fps_overlay;
 
-const ITERATIONS_COUNT : u32 = 15;
+const ITERATIONS_COUNT : u32 = 1;
 
 #[derive(Resource)]
 struct MyCursor{
@@ -54,8 +54,10 @@ impl Root {
 
         for segment_info in segments {
             
+            let mut test_transform_to_delete = Transform::from_xyz(0.0, last_bone_length / 2.0, 0.0);
+            test_transform_to_delete.rotate_z(PI/4.0);
             let joint : Entity = commands.spawn((
-                Transform::from_xyz(0.0, last_bone_length / 2.0, 0.0),
+                test_transform_to_delete,
                 joint_config.mesh.clone(),
                 joint_config.material.clone(),
                 Joint{target_dir : vec2(1.0, 1.0)}
@@ -99,7 +101,7 @@ fn main() {
         }))
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, cursor_system)
-        .add_systems(FixedUpdate, (update_target_ball, ik_on_arm))
+        .add_systems(FixedUpdate, (update_target_ball, CCD_on_arm))
         .run();
 }
 
@@ -145,6 +147,11 @@ fn setup(
             material: MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 0.0))),
             length: 150.0,
         },
+        LimbSegmentConfig {
+            mesh: Mesh2d(meshes.add(Rectangle::new(50.0, 150.0))),
+            material: MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 255.0))),
+            length: 150.0,
+        },
     ];
     
     commands.spawn((
@@ -182,17 +189,16 @@ fn update_target_ball(
     ball_transform.translation = vec3(my_cursor.position.x, my_cursor.position.y, 0.)
 }
 
-fn ik_on_arm(
+fn CCD_on_arm(
+    mut gizmos: Gizmos,
     root_query: Query<Entity, With<Root>>,
     children: Query<&Children>,
-    target: Query<&Transform, (With<TargetBall>, Without<Hand>, Without<Joint>)>,
-    mut joint_query: Query<(&GlobalTransform, &mut Transform), (With<Joint>, Without<Hand>)>,
-    hand_query: Query<&GlobalTransform, (Without<Joint>, With<Hand>)>
+    target: Query<&GlobalTransform, (With<TargetBall>, Without<Hand>, Without<Joint>, Without<Root>)>,
+    mut joint_query: Query<(&GlobalTransform, &mut Transform), (With<Joint>, Without<Hand>, Without<Root>)>,
+    hand_query: Query<&GlobalTransform, (Without<Joint>, With<Hand>, Without<Root>)>
 ) {
-    const MAX_ROTATION_PER_ITER: f32 = 10.0 * PI / 180.0; // 10 degrees in radians
-    const IK_EPSILON: f32 = 0.5; // Minimum distance to consider as "close enough"
-
     for root_entity in root_query{
+
         let all_children: Vec<Entity> = children.iter_descendants(root_entity).collect();
 
         let mut joints: Vec<Entity> = Vec::new();
@@ -202,37 +208,38 @@ fn ik_on_arm(
             }
         }
         let hand: Entity = *all_children.last().expect("the arm does not have a hand");
+        let target_transform: &GlobalTransform = target.single().expect("no target");
 
-        let target_transform: &Transform = target.single().expect("no target");
         // do Cyclic Corrdinate IK
-        for _ in 0..ITERATIONS_COUNT{
-            // do IK
-            for joint in joints.iter(){
-                let (global_joint_transform, mut joint_transform) =  joint_query.get_mut(*joint).expect("");
+        let limb_amplitude_increment: f32 = 1.0 / joints.len() as f32;
+
+        for _ in 0..ITERATIONS_COUNT {
+            
+            let mut limb_amplitude = 0.25;
+            
+            for joint in joints.iter().rev() {
+
+                let hand_transform: &GlobalTransform = hand_query.get(hand).expect("the arm does not have a hand");
+                let (global_joint_transform, mut joint_transform) = joint_query.get_mut(*joint).expect("");
                 
-                // Re-fetch hand transform after each joint rotation for up-to-date position
-                let hand_transform = hand_query.get(hand).expect("the arm does not have a hand");
-                let joint_pos = global_joint_transform.translation().truncate();
-                let hand_pos = hand_transform.translation().truncate();
-                let target_pos = target_transform.translation.truncate();
+                let raw_vector_joint_hand = global_joint_transform.translation() - hand_transform.translation();
+                let raw_vector_joint_target = global_joint_transform.translation() - target_transform.translation();
 
-                let vector_joint_hand = hand_pos - joint_pos;
-                let vector_joint_target = target_pos - joint_pos;
-
-                // Only rotate if the hand is not close enough to the target
-                if vector_joint_hand.length() > 1e-6 && vector_joint_target.length() > 1e-6 && (hand_pos - target_pos).length() > IK_EPSILON {
-                    let vector_joint_hand_norm = vector_joint_hand.normalize();
-                    let vector_joint_target_norm = vector_joint_target.normalize();
-                    let angle = vector_joint_hand_norm.angle_to(vector_joint_target_norm);
-                    // Determine the sign of the angle using cross product
-                    let cross = vector_joint_hand_norm.perp_dot(vector_joint_target_norm);
-                    let signed_angle = if cross < 0.0 { -angle } else { angle };
-
-                    // Clamp the rotation to avoid flailing
-                    let clamped_angle = signed_angle.clamp(-MAX_ROTATION_PER_ITER, MAX_ROTATION_PER_ITER);
-
-                    joint_transform.rotation = joint_transform.rotation * Quat::from_rotation_z(clamped_angle);
+                // Check vector validity before normalizing
+                if raw_vector_joint_hand.length() < 0.001 || raw_vector_joint_target.length() < 0.001 {
+                    continue;
                 }
+
+                let angle_magnitude = raw_vector_joint_hand.angle_between(raw_vector_joint_target);
+                
+                let cross_product = raw_vector_joint_hand.cross(raw_vector_joint_target);
+                let angle_sign = if cross_product.z > 0.0 { 1.0 } else { -1.0 };
+                
+                let angle = angle_magnitude * angle_sign * limb_amplitude;
+
+                joint_transform.rotate_z(angle);
+
+                //limb_amplitude += limb_amplitude_increment;
             }
         }
     }
