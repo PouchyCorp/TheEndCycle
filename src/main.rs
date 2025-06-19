@@ -1,9 +1,11 @@
 use std::f32::consts::PI;
 use bevy::{
-    prelude::*
+    log::tracing_subscriber::filter::targets, prelude::*, render::render_resource::encase::private::Length
 };
 use bevy_dev_tools::fps_overlay;
 use std::collections::HashMap;
+
+const MAX_FABRIK_ITER_COUNT : u32 = 10;
 
 #[derive(Resource)]
 struct MyCursor{
@@ -13,7 +15,7 @@ struct MyCursor{
 #[derive(Component)]
 struct Root;
 
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct Joint{
     length : f32,
     motion_range_min : f32,
@@ -39,19 +41,47 @@ impl Arms {
         joint_list : Vec<Joint>,
         root_position : Vec3
     ) {
+        let mut arm_vec : Vec<Entity> = Vec::new();
+
         let root = commands.spawn((
             Root,
+            Joint{length: 0. , motion_range_max : 180. , motion_range_min : 180.},
             Transform::from_xyz(root_position.x, root_position.y, root_position.z)
         )).id();
+        arm_vec.push(root);
+
+        let mut ik_param_vec: Vec<(Joint, Vec3)> = Vec::new();
+        ik_param_vec.push((
+            Joint{length: 0. , motion_range_max : 180. , motion_range_min : 180.},
+            vec3(root_position.x, root_position.y, root_position.z
+        )));
+        for joint in &joint_list{
+            ik_param_vec.push((joint.clone(), vec3(root_position.x, root_position.y, root_position.z)));
+        }
+        let ik_result = solve_fabrik(&root_position, &ik_param_vec, &Vec3 { x: 200. , y: 200., z: 200. });
+
+
+        let updated_joint_pos: Vec<(Joint, Vec3)> = Vec::new();
+        match ik_result{
+            Ok(vec) => {
+                //TODO
+            }
+            Err(UnreachableError) => {}
+        }
 
         for joint in joint_list{
             let joint = commands.spawn((
                 joint,
-                Transform::from_xyz(root_position.x, root_position.y, root_position.z) //starts at the roots position
+                Transform::from_xyz(root_position.x, root_position.y, root_position.z) //starts at the roots position (relatively)
             )).id();
 
-            commands.entity(root).add_child(joint);
+            arm_vec.push(joint);
         }
+
+        self.list.insert(
+            root, 
+            arm_vec
+        );
     }
 }
 
@@ -131,4 +161,64 @@ fn update_target_ball(
     let mut ball_transform = ball_transform_query.single_mut().expect("no ball found");
     
     ball_transform.translation = vec3(my_cursor.position.x, my_cursor.position.y, 0.)
+}
+
+
+#[derive(Debug, Clone)]
+struct UnreachableError;
+
+fn solve_fabrik(
+    root: &Vec3,
+    joints: &Vec<(Joint, Vec3)>,
+    target: &Vec3
+) -> Result<Vec<(Joint, Vec3)>, UnreachableError> {
+    let joint_count = joints.len() as u32;
+    let mut joints: Vec<(Joint, Vec3)> = joints.clone(); // No need for to_vec() after clone()
+    
+    // Check if target is reachable
+    let mut total_length = 0.0;
+    for (joint, _) in &joints {
+        total_length += joint.length;
+    }
+    
+    if total_length < root.distance(*target) {
+        return Err(UnreachableError);
+    }
+    
+    let tolerance = 0.01; // Define appropriate tolerance
+    let mut iter_count: u32 = 0;
+    
+    while joints.last().unwrap().1.distance(*target) > tolerance && iter_count < MAX_FABRIK_ITER_COUNT {
+        // Forward pass
+        // Set the end effector to the target position
+        let (_, hand_pos) = joints.last_mut().unwrap();
+        *hand_pos = *target;
+        
+        // Work backward from end to root
+        for i in (1..joint_count).rev() {
+            let current_idx = i as usize;
+            let anterior_idx = (i-1) as usize;
+            
+            let direction = (joints[anterior_idx].1 - joints[current_idx].1).normalize();
+            joints[anterior_idx].1 = joints[current_idx].1 + direction * joints[current_idx].0.length;
+        }
+        
+        // Backward pass
+        // Set the root to its original position
+        let (_, root_pos) = joints.first_mut().unwrap();
+        *root_pos = *root;
+        
+        // Work forward from root to end
+        for i in 0..(joint_count-1) {
+            let current_idx = i as usize;
+            let posterior_idx = (i+1) as usize;
+            
+            let direction = (joints[posterior_idx].1 - joints[current_idx].1).normalize();
+            joints[posterior_idx].1 = joints[current_idx].1 + direction * joints[posterior_idx].0.length;
+        }
+        
+        iter_count += 1;
+    }
+    
+    Ok(joints)
 }
