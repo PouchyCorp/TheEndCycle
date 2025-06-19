@@ -38,13 +38,13 @@ impl Default for Joint {
 // Resource to store all arms, mapping root entity to a list of joint entities
 #[derive(Resource)]
 struct Arms{
-    list : HashMap<Entity, Vec<Entity>>
+    hashmap : HashMap<Entity, Vec<Entity>>
 }
 impl Arms {
     // Method to create a new arm with a given joint list and root position
     fn new(
-        mut self,
-        mut commands : Commands,
+        &mut self,
+        commands : &mut Commands,
         joint_list : Vec<Joint>,
         root_position : Vec3
     ) {
@@ -70,30 +70,41 @@ impl Arms {
         // Attempt to solve IK using FABRIK
         let ik_result = solve_fabrik(&root_position, &ik_param_vec, &Vec3 { x: 200. , y: 200., z: 200. });
 
-        // Placeholder for updating joint positions after IK
-        let updated_joint_pos: Vec<(Joint, Vec3)> = Vec::new();
+        // updating joint positions after IK
+        let mut updated_joint_list: Vec<(Joint, Vec3)> = Vec::new();
         match ik_result{
             Ok(vec) => {
-                //TODO
+                for pair in vec{
+                    updated_joint_list.push((
+                        pair.0,
+                        pair.1
+                    ));
+                }
             }
             Err(UnreachableError) => {}
         }
 
         // Spawn each joint entity at the root position
-        for joint in joint_list{
+        for (joint, pos) in updated_joint_list{
             let joint = commands.spawn((
                 joint,
-                Transform::from_xyz(root_position.x, root_position.y, root_position.z) //starts at the roots position (relatively)
+                Transform::from_xyz(pos.x, pos.y, pos.z)
             )).id();
 
             arm_vec.push(joint);
         }
 
         // Store the arm in the resource
-        self.list.insert(
+        self.hashmap.insert(
             root, 
             arm_vec
         );
+    }
+}
+
+impl Default for Arms {
+    fn default() -> Self {
+        Arms { hashmap: HashMap::new()}
     }
 }
 
@@ -165,6 +176,10 @@ fn setup(
         Joint::default()
     ];
     
+    let mut arms = Arms::default();
+    arms.new(&mut commands, segments, vec3(0., 0., 0.));
+    commands.insert_resource(arms);
+
     // Spawn the target ball entity
     commands.spawn((
         Transform::from_xyz(0., 0., 0.),
@@ -173,7 +188,7 @@ fn setup(
         MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 255.0)))
     ));
 
-    //Root::new(commands, vec3(0.0, 0.0, 0.0), segments, joint_config);
+    
 
 }
 
