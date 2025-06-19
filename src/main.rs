@@ -5,22 +5,27 @@ use bevy::{
 use bevy_dev_tools::fps_overlay;
 use std::collections::HashMap;
 
+// Maximum number of iterations for the FABRIK algorithm
 const MAX_FABRIK_ITER_COUNT : u32 = 10;
 
+// Resource to store the current cursor position
 #[derive(Resource)]
 struct MyCursor{
     position : Vec2
 }
 
+// Marker component for the root joint
 #[derive(Component)]
 struct Root;
 
+// Component representing a joint in the arm
 #[derive(Component, Clone)]
 struct Joint{
-    length : f32,
-    motion_range_min : f32,
-    motion_range_max : f32
+    length : f32,              // Length of the joint segment
+    motion_range_min : f32,    // Minimum allowed angle (not used yet)
+    motion_range_max : f32     // Maximum allowed angle (not used yet)
 }
+// Default implementation for Joint
 impl Default for Joint {
     fn default() -> Self {
         Joint { 
@@ -30,11 +35,13 @@ impl Default for Joint {
     }
 }
 
+// Resource to store all arms, mapping root entity to a list of joint entities
 #[derive(Resource)]
 struct Arms{
     list : HashMap<Entity, Vec<Entity>>
 }
 impl Arms {
+    // Method to create a new arm with a given joint list and root position
     fn new(
         mut self,
         mut commands : Commands,
@@ -43,6 +50,7 @@ impl Arms {
     ) {
         let mut arm_vec : Vec<Entity> = Vec::new();
 
+        // Spawn the root entity
         let root = commands.spawn((
             Root,
             Joint{length: 0. , motion_range_max : 180. , motion_range_min : 180.},
@@ -50,6 +58,7 @@ impl Arms {
         )).id();
         arm_vec.push(root);
 
+        // Prepare joint parameters for IK
         let mut ik_param_vec: Vec<(Joint, Vec3)> = Vec::new();
         ik_param_vec.push((
             Joint{length: 0. , motion_range_max : 180. , motion_range_min : 180.},
@@ -58,9 +67,10 @@ impl Arms {
         for joint in &joint_list{
             ik_param_vec.push((joint.clone(), vec3(root_position.x, root_position.y, root_position.z)));
         }
+        // Attempt to solve IK using FABRIK
         let ik_result = solve_fabrik(&root_position, &ik_param_vec, &Vec3 { x: 200. , y: 200., z: 200. });
 
-
+        // Placeholder for updating joint positions after IK
         let updated_joint_pos: Vec<(Joint, Vec3)> = Vec::new();
         match ik_result{
             Ok(vec) => {
@@ -69,6 +79,7 @@ impl Arms {
             Err(UnreachableError) => {}
         }
 
+        // Spawn each joint entity at the root position
         for joint in joint_list{
             let joint = commands.spawn((
                 joint,
@@ -78,6 +89,7 @@ impl Arms {
             arm_vec.push(joint);
         }
 
+        // Store the arm in the resource
         self.list.insert(
             root, 
             arm_vec
@@ -85,14 +97,17 @@ impl Arms {
     }
 }
 
+// Marker component for the target ball
 #[derive(Component)]
 struct TargetBall;
 
 
 
 
+// Main entry point
 fn main() {
     App::new()
+        // Add default plugins and FPS overlay
         .add_plugins((DefaultPlugins,
         fps_overlay::FpsOverlayPlugin {
                 config: fps_overlay::FpsOverlayConfig {
@@ -106,11 +121,13 @@ fn main() {
                     enabled: true,
                 }
         }))
+        // Register startup and update systems
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, (cursor_system, update_target_ball))
         .run();
 }
 
+// System to update the cursor position resource with the current mouse position
 fn cursor_system(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
@@ -119,6 +136,7 @@ fn cursor_system(
     let window = windows.single().expect("huh");
     let (camera, camera_transform) = camera_q.single().expect("huh");
 
+    // Get the cursor position in world coordinates
     if let Some(cursor_pixel_position) =  window.cursor_position(){
         let world_pos = camera.viewport_to_world_2d(camera_transform, cursor_pixel_position);
         match world_pos{
@@ -128,14 +146,18 @@ fn cursor_system(
     }
 }
 
+// Setup system to initialize the scene
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    // Spawn the 2D camera
     commands.spawn(Camera2d::default());
+    // Insert the cursor resource
     commands.insert_resource(MyCursor{position : vec2(0.,0.)});
 
+    // Define the arm segments
     let segments: Vec<Joint> = vec![
         Joint::default(),
         Joint::default(),
@@ -143,6 +165,7 @@ fn setup(
         Joint::default()
     ];
     
+    // Spawn the target ball entity
     commands.spawn((
         Transform::from_xyz(0., 0., 0.),
         TargetBall,
@@ -154,19 +177,23 @@ fn setup(
 
 }
 
+// System to update the target ball's position to follow the cursor
 fn update_target_ball(
     mut ball_transform_query: Query<&mut Transform, With<TargetBall>>,
     my_cursor : Res<MyCursor>
 ){
     let mut ball_transform = ball_transform_query.single_mut().expect("no ball found");
     
+    // Set the ball's translation to the cursor position
     ball_transform.translation = vec3(my_cursor.position.x, my_cursor.position.y, 0.)
 }
 
 
+// Error type for unreachable IK targets
 #[derive(Debug, Clone)]
 struct UnreachableError;
 
+// FABRIK algorithm implementation for inverse kinematics
 fn solve_fabrik(
     root: &Vec3,
     joints: &Vec<(Joint, Vec3)>,
@@ -182,12 +209,14 @@ fn solve_fabrik(
     }
     
     if total_length < root.distance(*target) {
+        // Target is unreachable
         return Err(UnreachableError);
     }
     
     let tolerance = 0.01; // Define appropriate tolerance
     let mut iter_count: u32 = 0;
     
+    // Iterate until the end effector is close enough to the target or max iterations reached
     while joints.last().unwrap().1.distance(*target) > tolerance && iter_count < MAX_FABRIK_ITER_COUNT {
         // Forward pass
         // Set the end effector to the target position
