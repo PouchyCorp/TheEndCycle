@@ -62,8 +62,8 @@ impl Arms {
         let mut ik_param_vec: Vec<(Joint, Vec3)> = Vec::new();
         ik_param_vec.push((
             Joint{length: 0. , motion_range_max : 180. , motion_range_min : 180.},
-            vec3(root_position.x, root_position.y, root_position.z
-        )));
+            vec3(root_position.x, root_position.y, root_position.z)
+        ));
         for joint in &joint_list{
             ik_param_vec.push((joint.clone(), vec3(root_position.x, root_position.y, root_position.z)));
         }
@@ -134,7 +134,11 @@ fn main() {
         }))
         // Register startup and update systems
         .add_systems(Startup, setup)
-        .add_systems(FixedUpdate, (cursor_system, update_target_ball))
+        .add_systems(FixedUpdate, (
+            cursor_system,
+            update_target_ball,
+            draw_arm_gizmos
+        ))
         .run();
 }
 
@@ -265,4 +269,25 @@ fn solve_fabrik(
     }
     
     Ok(joints)
+}
+
+// System to draw gizmos for all arms and their joints
+fn draw_arm_gizmos(
+    arms: Res<Arms>,
+    transforms: Query<&Transform, With<Joint>>,
+    mut gizmos: Gizmos,
+) {
+    // For each arm in the hashmap
+    for arm in arms.hashmap.values() {
+        // Draw lines between consecutive joints
+        for window in arm.windows(2) {
+            if let (Some(a), Some(b)) = (transforms.get(window[0]).ok(), transforms.get(window[1]).ok()) {
+                gizmos.line(
+                    a.translation,
+                    b.translation,
+                    Color::WHITE,
+                );
+            }
+        }
+    }
 }
