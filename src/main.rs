@@ -1,10 +1,9 @@
 use std::f32::consts::PI;
 use bevy::{
-    prelude::*, transform
+    prelude::*
 };
 use bevy_dev_tools::fps_overlay;
-
-const ITERATIONS_COUNT : u32 = 1;
+use std::collections::HashMap;
 
 #[derive(Resource)]
 struct MyCursor{
@@ -12,77 +11,55 @@ struct MyCursor{
 }
 
 #[derive(Component)]
-struct TargetBall;
-
-struct LimbSegmentConfig {
-    mesh: Mesh2d,
-    material: MeshMaterial2d<ColorMaterial>,
-    length: f32, // Add length field
-}
-
-struct JointConfig {
-    mesh: Mesh2d,
-    material: MeshMaterial2d<ColorMaterial>
-}
-
-#[derive(Component)]
-struct Bone{
-    length : f32
-}
-#[derive(Component)]
 struct Root;
 
 #[derive(Component)]
-struct Hand;
-
-#[derive(Component)]
 struct Joint{
-    target_dir : Vec2
+    length : f32,
+    motion_range_min : f32,
+    motion_range_max : f32
 }
-
-impl Root {
-    fn new(mut commands: Commands, origin: Vec3, segments: Vec<LimbSegmentConfig>, joint_config : JointConfig) {
-        let root: Entity = commands.spawn((
-            Transform::from_xyz(origin.x, origin.y, origin.z),
-            joint_config.mesh.clone(),
-            joint_config.material.clone(),
-            Root))
-            .id();
-
-        let mut last_entity = root;
-        let mut last_bone_length = 0.0; // theoric lenght of the root
-
-        for segment_info in segments {
-            
-            let mut test_transform_to_delete = Transform::from_xyz(0.0, last_bone_length / 2.0, 0.0);
-            test_transform_to_delete.rotate_z(PI/4.0);
-            let joint : Entity = commands.spawn((
-                test_transform_to_delete,
-                joint_config.mesh.clone(),
-                joint_config.material.clone(),
-                Joint{target_dir : vec2(1.0, 1.0)}
-            )).id();
-            commands.entity(last_entity).add_child(joint);
-            last_entity = joint;
-            
-            let bone: Entity = commands.spawn((
-                Transform::from_xyz(0.0, segment_info.length / 2.0, 0.0),
-                segment_info.mesh,
-                segment_info.material,
-                Bone{length : segment_info.length}
-            )).id();
-            commands.entity(last_entity).add_child(bone);
-            last_entity = bone;
-            last_bone_length = segment_info.length;
-        }
-
-        let hand : Entity = commands.spawn((
-                Transform::from_xyz(0.0, last_bone_length / 2.0, 0.0),
-                Hand
-            )).id();
-        commands.entity(last_entity).add_child(hand);
+impl Default for Joint {
+    fn default() -> Self {
+        Joint { 
+            length: 100.0,
+            motion_range_min : 180.0,
+            motion_range_max : 180.0}
     }
 }
+
+#[derive(Resource)]
+struct Arms{
+    list : HashMap<Entity, Vec<Entity>>
+}
+impl Arms {
+    fn new(
+        mut self,
+        mut commands : Commands,
+        joint_list : Vec<Joint>,
+        root_position : Vec3
+    ) {
+        let root = commands.spawn((
+            Root,
+            Transform::from_xyz(root_position.x, root_position.y, root_position.z)
+        )).id();
+
+        for joint in joint_list{
+            let joint = commands.spawn((
+                joint,
+                Transform::from_xyz(root_position.x, root_position.y, root_position.z) //starts at the roots position
+            )).id();
+
+            commands.entity(root).add_child(joint);
+        }
+    }
+}
+
+#[derive(Component)]
+struct TargetBall;
+
+
+
 
 fn main() {
     App::new()
@@ -100,8 +77,7 @@ fn main() {
                 }
         }))
         .add_systems(Startup, setup)
-        .add_systems(FixedUpdate, cursor_system)
-        .add_systems(FixedUpdate, (update_target_ball, CCD_on_arm))
+        .add_systems(FixedUpdate, (cursor_system, update_target_ball))
         .run();
 }
 
@@ -128,30 +104,13 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     commands.spawn(Camera2d::default());
-
     commands.insert_resource(MyCursor{position : vec2(0.,0.)});
 
-    let segments = vec![
-        LimbSegmentConfig {
-            mesh: Mesh2d(meshes.add(Rectangle::new(70.0, 200.0))),
-            material: MeshMaterial2d(materials.add(Color::srgb(255.0, 0.0, 0.0))),
-            length: 200.0,
-        },
-        LimbSegmentConfig {
-            mesh: Mesh2d(meshes.add(Rectangle::new(50.0, 100.0))),
-            material: MeshMaterial2d(materials.add(Color::srgb(0.0, 255.0, 0.0))),
-            length: 100.0,
-        },
-        LimbSegmentConfig {
-            mesh: Mesh2d(meshes.add(Rectangle::new(50.0, 150.0))),
-            material: MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 0.0))),
-            length: 150.0,
-        },
-        LimbSegmentConfig {
-            mesh: Mesh2d(meshes.add(Rectangle::new(50.0, 150.0))),
-            material: MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 255.0))),
-            length: 150.0,
-        },
+    let segments: Vec<Joint> = vec![
+        Joint::default(),
+        Joint::default(),
+        Joint::default(),
+        Joint::default()
     ];
     
     commands.spawn((
@@ -161,23 +120,8 @@ fn setup(
         MeshMaterial2d(materials.add(Color::srgb(255.0, 255.0, 255.0)))
     ));
 
+    //Root::new(commands, vec3(0.0, 0.0, 0.0), segments, joint_config);
 
-    let joint_config = JointConfig{
-        mesh: Mesh2d(meshes.add(Circle::new(30.0))),
-        material: MeshMaterial2d(materials.add(Color::srgb(0.0, 0.0, 255.0)))
-    };
-    Root::new(commands, vec3(0.0, 0.0, 0.0), segments, joint_config);
-
-}
-
-fn update_arm_transforms(mut transforms_joints: Query<(&mut Transform, &Joint)>){
-    for (mut transform, joint) in transforms_joints.iter_mut() {
-        let quat_dir = transform.rotation * Vec3::Y;
-        let quat_dir_2d = Vec2::new(quat_dir.x, quat_dir.y);
-
-        let angle = joint.target_dir.angle_to(quat_dir_2d);
-        transform.rotate_z(angle);
-    }
 }
 
 fn update_target_ball(
@@ -187,60 +131,4 @@ fn update_target_ball(
     let mut ball_transform = ball_transform_query.single_mut().expect("no ball found");
     
     ball_transform.translation = vec3(my_cursor.position.x, my_cursor.position.y, 0.)
-}
-
-fn CCD_on_arm(
-    mut gizmos: Gizmos,
-    root_query: Query<Entity, With<Root>>,
-    children: Query<&Children>,
-    target: Query<&GlobalTransform, (With<TargetBall>, Without<Hand>, Without<Joint>, Without<Root>)>,
-    mut joint_query: Query<(&GlobalTransform, &mut Transform), (With<Joint>, Without<Hand>, Without<Root>)>,
-    hand_query: Query<&GlobalTransform, (Without<Joint>, With<Hand>, Without<Root>)>
-) {
-    for root_entity in root_query{
-
-        let all_children: Vec<Entity> = children.iter_descendants(root_entity).collect();
-
-        let mut joints: Vec<Entity> = Vec::new();
-        for &child in &all_children {
-            if joint_query.get_mut(child).is_ok() {
-                joints.push(child);
-            }
-        }
-        let hand: Entity = *all_children.last().expect("the arm does not have a hand");
-        let target_transform: &GlobalTransform = target.single().expect("no target");
-
-        // do Cyclic Corrdinate IK
-        let limb_amplitude_increment: f32 = 1.0 / joints.len() as f32;
-
-        for _ in 0..ITERATIONS_COUNT {
-            
-            let mut limb_amplitude = 0.25;
-            
-            for joint in joints.iter().rev() {
-
-                let hand_transform: &GlobalTransform = hand_query.get(hand).expect("the arm does not have a hand");
-                let (global_joint_transform, mut joint_transform) = joint_query.get_mut(*joint).expect("");
-                
-                let raw_vector_joint_hand = global_joint_transform.translation() - hand_transform.translation();
-                let raw_vector_joint_target = global_joint_transform.translation() - target_transform.translation();
-
-                // Check vector validity before normalizing
-                if raw_vector_joint_hand.length() < 0.001 || raw_vector_joint_target.length() < 0.001 {
-                    continue;
-                }
-
-                let angle_magnitude = raw_vector_joint_hand.angle_between(raw_vector_joint_target);
-                
-                let cross_product = raw_vector_joint_hand.cross(raw_vector_joint_target);
-                let angle_sign = if cross_product.z > 0.0 { 1.0 } else { -1.0 };
-                
-                let angle = angle_magnitude * angle_sign * limb_amplitude;
-
-                joint_transform.rotate_z(angle);
-
-                //limb_amplitude += limb_amplitude_increment;
-            }
-        }
-    }
 }
