@@ -6,7 +6,7 @@ use bevy_dev_tools::fps_overlay;
 use std::collections::HashMap;
 
 // Maximum number of iterations for the FABRIK algorithm
-const MAX_FABRIK_ITER_COUNT : u32 = 10;
+const MAX_FABRIK_ITER_COUNT : u32 = 50;
 
 // Resource to store the current cursor position
 #[derive(Resource)]
@@ -19,7 +19,7 @@ struct MyCursor{
 struct Root;
 
 // Component representing a joint in the arm
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 struct Joint{
     length : f32,              // Length of the joint segment
     motion_range_min : f32,    // Minimum allowed angle (not used yet)
@@ -29,7 +29,7 @@ struct Joint{
 impl Default for Joint {
     fn default() -> Self {
         Joint { 
-            length: 100.0,
+            length: 50.0,
             motion_range_min : 180.0,
             motion_range_max : 180.0}
     }
@@ -68,20 +68,15 @@ impl Arms {
             ik_param_vec.push((joint.clone(), vec3(root_position.x, root_position.y, root_position.z)));
         }
         // Attempt to solve IK using FABRIK
-        let ik_result = solve_fabrik(&root_position, &ik_param_vec, &Vec3 { x: 200. , y: 200., z: 200. });
+        let ik_result = solve_fabrik(&root_position, ik_param_vec, &Vec3 { x: 200. , y: 200., z: 200. });
 
         // updating joint positions after IK
         let mut updated_joint_list: Vec<(Joint, Vec3)> = Vec::new();
-        match ik_result{
-            Ok(vec) => {
-                for pair in vec{
-                    updated_joint_list.push((
-                        pair.0,
-                        pair.1
-                    ));
-                }
-            }
-            Err(UnreachableError) => {}
+        for pair in ik_result{
+            updated_joint_list.push((
+                pair.0,
+                pair.1
+            ));
         }
 
         // Spawn each joint entity at the root position
@@ -137,6 +132,7 @@ fn main() {
         .add_systems(FixedUpdate, (
             cursor_system,
             update_target_ball,
+            solve_fabrik_for_arms,
             draw_arm_gizmos
         ))
         .run();
@@ -173,15 +169,19 @@ fn setup(
     commands.insert_resource(MyCursor{position : vec2(0.,0.)});
 
     // Define the arm segments
-    let segments: Vec<Joint> = vec![
-        Joint::default(),
-        Joint::default(),
-        Joint::default(),
-        Joint::default()
-    ];
+    
+    let mut segments: Vec<Joint> = vec![];
+    for _ in 0..5{
+        segments.push(Joint::default())
+    }
     
     let mut arms = Arms::default();
-    arms.new(&mut commands, segments, vec3(0., 0., 0.));
+    for x in 0..10{
+        for y in 0..10{
+            arms.new(&mut commands, segments.clone(), vec3(x as f32*50., y as f32*50., 0.));
+        }
+    }
+    
     commands.insert_resource(arms);
 
     // Spawn the target ball entity
@@ -207,47 +207,48 @@ fn update_target_ball(
     ball_transform.translation = vec3(my_cursor.position.x, my_cursor.position.y, 0.)
 }
 
-
-// Error type for unreachable IK targets
-#[derive(Debug, Clone)]
-struct UnreachableError;
-
 // FABRIK algorithm implementation for inverse kinematics
 fn solve_fabrik(
     root: &Vec3,
-    joints: &Vec<(Joint, Vec3)>,
+    joints: Vec<(Joint, Vec3)>,
     target: &Vec3
-) -> Result<Vec<(Joint, Vec3)>, UnreachableError> {
+) -> Vec<(Joint, Vec3)> {
     let joint_count = joints.len() as u32;
-    let mut joints: Vec<(Joint, Vec3)> = joints.clone(); // No need for to_vec() after clone()
-    
+    let mut joints: Vec<(Joint, Vec3)> = joints.clone();
+    let mut target = target.clone();
     // Check if target is reachable
     let mut total_length = 0.0;
     for (joint, _) in &joints {
         total_length += joint.length;
     }
     
-    if total_length < root.distance(*target) {
+    let root_target_dist = root.distance(target);
+    if total_length < root_target_dist {
         // Target is unreachable
-        return Err(UnreachableError);
+        let root_target_vec = root.lerp(target, root_target_dist/total_length);
+        target = root_target_vec; //update target to be reachable
     }
     
-    let tolerance = 0.01; // Define appropriate tolerance
+    let tolerance = 5.; // Define appropriate tolerance
     let mut iter_count: u32 = 0;
     
     // Iterate until the end effector is close enough to the target or max iterations reached
-    while joints.last().unwrap().1.distance(*target) > tolerance && iter_count < MAX_FABRIK_ITER_COUNT {
+    while joints.last().unwrap().1.distance(target) > tolerance && iter_count < MAX_FABRIK_ITER_COUNT {
         // Forward pass
         // Set the end effector to the target position
         let (_, hand_pos) = joints.last_mut().unwrap();
-        *hand_pos = *target;
+        hand_pos.clone_from(&target);
         
         // Work backward from end to root
         for i in (1..joint_count).rev() {
             let current_idx = i as usize;
             let anterior_idx = (i-1) as usize;
-            
-            let direction = (joints[anterior_idx].1 - joints[current_idx].1).normalize();
+
+            let diff = joints[anterior_idx].1 - joints[current_idx].1;
+            if diff.length() == 0.0 {
+                continue; // Skip to avoid NaN
+            }
+            let direction = diff.normalize();
             joints[anterior_idx].1 = joints[current_idx].1 + direction * joints[current_idx].0.length;
         }
         
@@ -260,15 +261,19 @@ fn solve_fabrik(
         for i in 0..(joint_count-1) {
             let current_idx = i as usize;
             let posterior_idx = (i+1) as usize;
-            
-            let direction = (joints[posterior_idx].1 - joints[current_idx].1).normalize();
+
+            let diff = joints[posterior_idx].1 - joints[current_idx].1;
+            if diff.length() == 0.0 {
+                continue; // Skip to avoid NaN
+            }
+            let direction = diff.normalize();
             joints[posterior_idx].1 = joints[current_idx].1 + direction * joints[posterior_idx].0.length;
         }
         
         iter_count += 1;
     }
     
-    Ok(joints)
+    joints
 }
 
 // System to draw gizmos for all arms and their joints
@@ -288,6 +293,30 @@ fn draw_arm_gizmos(
                     Color::WHITE,
                 );
             }
+        }
+    }
+}
+
+fn solve_fabrik_for_arms(
+    mut joint_info: Query<(&Joint, &mut Transform), With<Joint>>,
+    arms: Res<Arms>,
+    target : Query<&mut Transform, (With<TargetBall>, Without<Joint>)>
+) {
+    for (root, chain) in &arms.hashmap {
+        let (_, root_transform) = joint_info.get(*root).unwrap();
+        let target_pos = target.single().unwrap().translation;
+        let mut param_vec : Vec<(Joint, Vec3)> = Vec::new();
+
+        for e in chain.iter(){
+            let (joint, transform) = joint_info.get(*e).unwrap();
+            param_vec.push((joint.clone(), transform.translation))
+        }
+        
+        let updated_pos = solve_fabrik(&root_transform.translation, param_vec, &target_pos);
+        // Write back
+        for (i, &e) in chain.iter().enumerate() {
+            let (_, mut transform) = joint_info.get_mut(e).unwrap();
+            transform.translation = updated_pos[i].1;
         }
     }
 }
